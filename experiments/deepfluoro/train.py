@@ -49,10 +49,10 @@ def train(
     n_batches_per_epoch,
     model_params,
 ):
-    metric = MultiscaleNormalizedCrossCorrelation2d(eps=1e-4)
-    geodesic = GeodesicSE3()
-    double = DoubleGeodesic(drr.detector.sdr)
-    contrast_distribution = torch.distributions.Uniform(1.0, 10.0)
+    metric = MultiscaleNormalizedCrossCorrelation2d(eps=1e-4)       # 相似性度量
+    geodesic = GeodesicSE3()                                        # 几何学1Loss
+    double = DoubleGeodesic(drr.detector.sdr)                       # 几何学2Loss
+    contrast_distribution = torch.distributions.Uniform(1.0, 10.0)  # 为了对DRR图像对比度进行随机取样
 
     best_loss = torch.inf
 
@@ -60,21 +60,21 @@ def train(
     for epoch in range(n_epochs + 1):
         losses = []
         for _ in (itr := tqdm(range(n_batches_per_epoch), leave=False)):
-            contrast = contrast_distribution.sample().item()
-            offset = get_random_offset(batch_size, device)
-            pose = isocenter_pose.compose(offset)
-            img = drr(None, None, None, pose=pose, bone_attenuation_multiplier=contrast)
-            img = transforms(img)
+            contrast = contrast_distribution.sample().item()                                # DRR对比度
+            offset = get_random_offset(batch_size, device)                                  # 生成ΔT
+            pose = isocenter_pose.compose(offset)                                           # 生成T，这个就是标签
+            img = drr(None, None, None, pose=pose, bone_attenuation_multiplier=contrast)    # 生成DRR
+            img = transforms(img)                                                           # 对DRR做变换，主要是进行归一化
 
-            pred_offset = model(img)
-            pred_pose = isocenter_pose.compose(pred_offset)
-            pred_img = drr(None, None, None, pose=pred_pose)
-            pred_img = transforms(pred_img)
+            pred_offset = model(img)                                                        # 这个就是预测的ΔT
+            pred_pose = isocenter_pose.compose(pred_offset)                                 # 这个是预测的T
+            pred_img = drr(None, None, None, pose=pred_pose)                                # 这个是预测的T生成的DRR，为了计算Loss用的
+            pred_img = transforms(pred_img)                                                 # 对DRR做归一化
 
-            ncc = metric(pred_img, img)
-            log_geodesic = geodesic(pred_pose, pose)
-            geodesic_rot, geodesic_xyz, double_geodesic = double(pred_pose, pose)
-            loss = 1 - ncc + 1e-2 * (log_geodesic + double_geodesic)
+            ncc = metric(pred_img, img)                                                     # 多尺度的归一化NCC Loss
+            log_geodesic = geodesic(pred_pose, pose)                                        # 几何学1Loss
+            geodesic_rot, geodesic_xyz, double_geodesic = double(pred_pose, pose)           # 几何学2Loss
+            loss = 1 - ncc + 1e-2 * (log_geodesic + double_geodesic)                        # 最终Loss
             if loss.isnan().any():
                 print("Aaaaaaand we've crashed...")
                 print(ncc)
@@ -103,11 +103,11 @@ def train(
                 )
                 raise RuntimeError("NaN loss")
 
-            optimizer.zero_grad()
-            loss.mean().backward()
-            adaptive_clip_grad_(model.parameters())
-            optimizer.step()
-            scheduler.step()
+            optimizer.zero_grad()                       # 梯度清零
+            loss.mean().backward()                      # 计算梯度
+            adaptive_clip_grad_(model.parameters())     # 裁剪梯度，防止梯度爆炸
+            optimizer.step()                            # 更新参数
+            scheduler.step()                            # 更新scheduler
 
             losses.append(loss.mean().item())
 
